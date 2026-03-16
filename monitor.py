@@ -6,7 +6,9 @@ import json
 import logging
 import logging.handlers
 import signal
+import sys
 import time
+import traceback
 
 import comwatt
 import csscolors
@@ -157,7 +159,7 @@ class Monitor(object):
             self.logger.info("Now %s" % time_now)
 
             if time_now < self.sunrise or time_now > self.sunset:
-                self.logger.warn("Sun is not raised")
+                self.logger.warning("Sun is not raised")
                 self.comwatt = None
                 continue
 
@@ -165,54 +167,62 @@ class Monitor(object):
                 self.logger.debug("Connect to Comwatt")
                 self.comwatt = comwatt.PowerGEN4(self.comwatt_email, self.comwatt_password, self.headless)
 
-            list_sun = self.comwatt.get_devices("sun")
-            device_sun = list_sun[0]
+            try:
+                list_sun = self.comwatt.get_devices("sun")
+                device_sun = list_sun[0]
 
-            if not device_sun.initialized:
-                self.logger.warning("Sun: Not initialized (count=%d)" % self.same_state_count)
-                self.check_state(-1000000000)
-                time.sleep(args.delay)
-                continue
+                if not device_sun.initialized:
+                    self.logger.warning("Sun: Not initialized (count=%d)" % self.same_state_count)
+                    self.check_state(-1000000000)
+                    time.sleep(args.delay)
+                    #time.sleep(10)
+                    continue
 
-            self.logger.info("Sun: %d" % device_sun.value_instant)
+                self.logger.info("Sun: %d" % device_sun.value_instant)
 
-            if device_sun.value_instant < self.threshold_sun : 
-                # Sun is not sufficient -> Off
-                #TODO : Optimiser les appels API (mémoriser létat de la lampe)
-                self.light_monitor.switch_off()
-
-            else:
-
-                list_injection = self.comwatt.get_devices("injection")
-                device_injection = list_injection[0]
-                list_withdrawal = self.comwatt.get_devices("withdrawal")
-                device_withdrawal = list_withdrawal[0] 
-
-                delta = device_injection.value_instant - device_withdrawal.value_instant
-
-                self.logger.info("Injection: %s" % device_injection.value_instant)
-                self.logger.info("Withdrawal: %s" % device_withdrawal.value_instant)
-                self.logger.info("Delta: %s" % delta)
-
-                self.check_state(delta)
-
-                if device_sun.value_instant < self.threshold_sun:
-                    self.set("off")
+                if device_sun.value_instant < self.threshold_sun : 
+                    # Sun is not sufficient -> Off
+                    #TODO : Optimiser les appels API (mémoriser létat de la lampe)
+                    self.light_monitor.switch_off()
 
                 else:
-                     
-                    color = None
-                    i = 0
-                    while i < len(self.thresholds):
-                        if delta > self.thresholds[i][0]:
-                            color = self.thresholds[i][1]
-                        else:
-                            break
-                        i += 1
 
-                    #TODO : Optimiser les appels API (mémoriser létat de la lampe)
-                    self.light_monitor.switch_on()
-                    self.light_monitor.state.set(xy=color)  
+                    list_injection = self.comwatt.get_devices("injection")
+                    device_injection = list_injection[0]
+                    list_withdrawal = self.comwatt.get_devices("withdrawal")
+                    device_withdrawal = list_withdrawal[0] 
+
+                    delta = device_injection.value_instant - device_withdrawal.value_instant
+
+                    self.logger.info("Injection: %s" % device_injection.value_instant)
+                    self.logger.info("Withdrawal: %s" % device_withdrawal.value_instant)
+                    self.logger.info("Delta: %s" % delta)
+
+                    self.check_state(delta)
+
+                    if device_sun.value_instant < self.threshold_sun:
+                        self.set("off")
+
+                    else:
+                        
+                        color = None
+                        i = 0
+                        while i < len(self.thresholds):
+                            if delta > self.thresholds[i][0]:
+                                color = self.thresholds[i][1]
+                            else:
+                                break
+                            i += 1
+
+                        #TODO : Optimiser les appels API (mémoriser létat de la lampe)
+                        self.light_monitor.switch_on()
+                        self.light_monitor.state.set(xy=color)  
+
+            except:
+                self.comwatt.save_screenshot('/mnt/screenshot.png')
+                traceback.print_exc()
+                self.logger.fatal(traceback.format_exc)
+                sys.exit(1)
 
             if args.count :
 
@@ -226,14 +236,14 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("config")
-    parser.add_argument("--delay", type=int, default=5)
+    parser.add_argument("--delay", type=int, default=1)
     parser.add_argument("--count", type=int, default=0)
     parser.add_argument("--show-browser", action="store_true")
     parser.add_argument("--log-file")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
     args = parser.parse_args()
     
-    if not args.log_level:
+    if not args.log_level or args.log_level == "ERROR":
         log_level = logging.ERROR
     if args.log_level == "DEBUG":
         log_level = logging.DEBUG
@@ -258,4 +268,8 @@ if __name__ == "__main__":
     m = Monitor(headless=not args.show_browser)
     m.load_configuration(config)
     m.initialize()
-    m.run()
+    try:
+        m.run(delay=args.delay)
+    except:
+        traceback.print_exc()
+        logging.fatal(traceback.format_exc())
