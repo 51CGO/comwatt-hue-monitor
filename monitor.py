@@ -6,7 +6,6 @@ import json
 import logging
 import logging.handlers
 import signal
-import sys
 import time
 import traceback
 
@@ -18,8 +17,8 @@ import pythonhuecontrol.v1.bridge
 class Monitor(object):
 
     def __init__(
-            self, 
-            comwatt_email=None, comwatt_password=None, 
+            self,
+            comwatt_email=None, comwatt_password=None,
             hue_bridge=None, hue_key=None, hue_light=None,
             headless=True):
 
@@ -52,7 +51,7 @@ class Monitor(object):
         self.light_monitor = None
 
         self.logger = logging.getLogger("Monitor")
-        
+
         self.previous_state = -1000000000
         self.same_state_count = 0
 
@@ -61,7 +60,10 @@ class Monitor(object):
     def initialize(self):
 
         # Initialize bridge connection
-        self.bridge = pythonhuecontrol.v1.bridge.Bridge(self.hue_bridge, "http://" + self.hue_bridge + "/api/" + self.hue_key)
+        self.bridge = pythonhuecontrol.v1.bridge.Bridge(
+            self.hue_bridge,
+            "http://" + self.hue_bridge + "/api/" + self.hue_key
+        )
 
         # Find the specified light
         for light_id in self.bridge.light_ids:
@@ -87,13 +89,12 @@ class Monitor(object):
 
         self.threshold_sun = config["thresholds"]["sun"]["min"]
 
-        list_thresholds = [ v for v in config["thresholds"]["delta"] ]
+        list_thresholds = [v for v in config["thresholds"]["delta"]]
 
         for key in list_thresholds:
             color = config["thresholds"]["delta"][key]
 
             self.thresholds.append((int(key), color))
-
 
     def set_color(self, color=None):
 
@@ -120,7 +121,6 @@ class Monitor(object):
                 self.light_monitor.switch_off()
 
         self.current_color = color
-        
 
     def stop(self, signum, frame):
         self.logger.info("Stop")
@@ -132,8 +132,6 @@ class Monitor(object):
 
         signal.signal(signal.SIGTERM, self.stop)
 
-        #self.sun_tool = suntime.Sun(config["location"]["latitude"], config["location"]["longitude"])
-        
         # Create a Comwatt client instance
         self.client = comwatt_client.ComwattClient()
 
@@ -147,15 +145,16 @@ class Monitor(object):
         dt_now = datetime.datetime.now(datetime.UTC)
 
         while self.do_run:
-                        
+
             try:
-                
-                data = self.client.get_site_networks_ts_time_ago(self.site_id, aggregation_level="NONE")
+
+                data = self.client.get_site_networks_ts_time_ago(
+                    self.site_id, aggregation_level="NONE")
 
                 timestamp = data['timestamps'][-1]
                 production = data['productions'][-1]
                 consumption = data['consumptions'][-1]
-                
+
                 if type(production) is str:
                     self.logger.warning("Production: %s" % production)
                     time.sleep(2)
@@ -165,55 +164,56 @@ class Monitor(object):
                     self.logger.warning("Consumption: %s" % consumption)
                     time.sleep(2)
                     continue
-                
+
                 delta = production - consumption
 
-                if production < self.threshold_sun : 
+                if production < self.threshold_sun:
                     # Sun is not sufficient -> Off
                     self.set_color(None)
 
                 else:
-                        
-                        color = None
-                        i = 0
-                        while i < len(self.thresholds):
-                            if delta > self.thresholds[i][0]:
-                                color = self.thresholds[i][1]
-                            else:
-                                break
-                            i += 1
 
-                        self.set_color(color)
+                    color = None
+                    i = 0
+                    while i < len(self.thresholds):
+                        if delta > self.thresholds[i][0]:
+                            color = self.thresholds[i][1]
+                        else:
+                            break
+                        i += 1
+
+                    self.set_color(color)
 
                 dt_ts = datetime.datetime.fromisoformat(timestamp)
-                
+
                 dt_next = dt_ts + datetime.timedelta(seconds=122)
 
                 if dt_next < dt_now:
                     dt_next = dt_now + datetime.timedelta(seconds=2)
-            
-                self.logger.info(
-                    "T=%s P=%6d C=%6d D=%6d N=%s (%s)" 
-                    %
-                    (dt_ts.strftime("%H:%M:%S"),
-                    production,
-                    consumption,
-                    delta,
-                    dt_next.strftime("%H:%M:%S"),
-                    color)
-                    )
 
-                while(dt_now < dt_next):
+                self.logger.info(
+                    "T=%s P=%6d C=%6d D=%6d N=%s (%s)"
+                    % (
+                        dt_ts.strftime("%H:%M:%S"),
+                        production,
+                        consumption,
+                        delta,
+                        dt_next.strftime("%H:%M:%S"),
+                        color
+                    )
+                )
+
+                while dt_now < dt_next:
 
                     dt_now = datetime.datetime.now(datetime.UTC)
                     time.sleep(1)
 
-            except:
+            except Exception:
                 traceback.print_exc()
                 self.logger.fatal(traceback.format_exc)
-                self.do_run=False
+                self.do_run = False
 
-            if args.count :
+            if args.count:
 
                 count += 1
 
@@ -229,9 +229,12 @@ if __name__ == "__main__":
     parser.add_argument("--count", type=int, default=0)
     parser.add_argument("--show-browser", action="store_true")
     parser.add_argument("--log-file")
-    parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    )
     args = parser.parse_args()
-    
+
     if not args.log_level or args.log_level == "ERROR":
         log_level = logging.ERROR
     if args.log_level == "DEBUG":
@@ -244,11 +247,15 @@ if __name__ == "__main__":
                 log_level = logging.WARN
 
     if args.log_file:
-        log_handler = logging.handlers.RotatingFileHandler(filename=args.log_file, mode="a", maxBytes=1024 * 1024, backupCount=5)
-        logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=log_level, handlers=[log_handler])
+        log_handler = logging.handlers.RotatingFileHandler(
+            filename=args.log_file, mode="a",
+            maxBytes=1024 * 1024, backupCount=5)
+        logging.basicConfig(
+            format="%(asctime)s %(levelname)s %(message)s",
+            level=log_level, handlers=[log_handler])
     else:
-        logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=log_level)
-
+        logging.basicConfig(
+            format="%(asctime)s %(levelname)s %(message)s", level=log_level)
 
     fd = open(args.config)
     config = json.load(fd)
@@ -259,6 +266,6 @@ if __name__ == "__main__":
     m.initialize()
     try:
         m.run(delay=args.delay)
-    except:
+    except Exception:
         traceback.print_exc()
         logging.fatal(traceback.format_exc())
