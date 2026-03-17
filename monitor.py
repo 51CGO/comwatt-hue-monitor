@@ -56,6 +56,8 @@ class Monitor(object):
         self.previous_state = -1000000000
         self.same_state_count = 0
 
+        self.current_color = None
+
     def initialize(self):
 
         # Initialize bridge connection
@@ -93,6 +95,33 @@ class Monitor(object):
             self.thresholds.append((int(key), color))
 
 
+    def set_color(self, color=None):
+
+        # Next state = Light on
+        if color:
+
+            # No change
+            if color == self.current_color:
+                return
+
+            self.logger.info("Set color: %s" % color)
+            self.light_monitor.set_hex_color(color)
+
+            # Light is off => switch on
+            if not self.current_color:
+                self.logger.info("Switch on")
+                self.light_monitor.switch_on()
+
+        # Next state = Light off
+        else:
+
+            if self.current_color:
+                self.logger.info("Switch off")
+                self.light_monitor.switch_off()
+
+        self.current_color = color
+        
+
     def stop(self, signum, frame):
         self.logger.info("Stop")
         self.do_run = False
@@ -118,9 +147,7 @@ class Monitor(object):
         dt_now = datetime.datetime.now(datetime.UTC)
 
         while self.do_run:
-            
-            self.logger.info(" Loop ".center(10, "="))
-            
+                        
             try:
                 
                 data = self.client.get_site_networks_ts_time_ago(self.site_id, aggregation_level="NONE")
@@ -128,13 +155,22 @@ class Monitor(object):
                 timestamp = data['timestamps'][-1]
                 production = data['productions'][-1]
                 consumption = data['consumptions'][-1]
-                delta = production - consumption
                 
+                if type(production) is str:
+                    self.logger.warning("Production: %s" % production)
+                    time.sleep(2)
+                    continue
+
+                if type(consumption) is str:
+                    self.logger.warning("Consumption: %s" % consumption)
+                    time.sleep(2)
+                    continue
+                
+                delta = production - consumption
 
                 if production < self.threshold_sun : 
                     # Sun is not sufficient -> Off
-                    #TODO : Optimiser les appels API (mémoriser létat de la lampe)
-                    self.light_monitor.switch_off()
+                    self.set_color(None)
 
                 else:
                         
@@ -147,9 +183,7 @@ class Monitor(object):
                                 break
                             i += 1
 
-                        #TODO : Optimiser les appels API (mémoriser létat de la lampe)
-                        self.light_monitor.switch_on()
-                        self.light_monitor.set_hex_color(color)  
+                        self.set_color(color)
 
                 dt_ts = datetime.datetime.fromisoformat(timestamp)
                 
@@ -161,11 +195,11 @@ class Monitor(object):
                 self.logger.info(
                     "T=%s P=%6d C=%6d D=%6d N=%s (%s)" 
                     %
-                    (timestamp,
+                    (dt_ts.strftime("%H:%M:%S"),
                     production,
                     consumption,
                     delta,
-                    dt_next,
+                    dt_next.strftime("%H:%M:%S"),
                     color)
                     )
 
@@ -177,7 +211,7 @@ class Monitor(object):
             except:
                 traceback.print_exc()
                 self.logger.fatal(traceback.format_exc)
-                sys.exit(1)
+                self.do_run=False
 
             if args.count :
 
