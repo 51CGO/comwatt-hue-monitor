@@ -5,8 +5,8 @@ import datetime
 import json
 import logging
 import logging.handlers
-import signal
 import time
+import threading
 import traceback
 
 import comwatt_client
@@ -14,13 +14,14 @@ import comwatt_client
 import pythonhuecontrol.v1.bridge
 
 
-class Monitor(object):
+class Monitor(threading.Thread):
 
     def __init__(
             self,
             comwatt_email=None, comwatt_password=None,
-            hue_bridge=None, hue_key=None, hue_light=None,
-            headless=True):
+            hue_bridge=None, hue_key=None, hue_light=None):
+
+        threading.Thread.__init__(self)
 
         # Comwatt credentials
         self.comwatt_email = comwatt_email
@@ -38,22 +39,15 @@ class Monitor(object):
         # Sun threshold
         self.threshold_sun = -1000000000
 
-        # Browser options
-        self.headless = headless
-
         # Thresolds and colors configuration
         self.thresholds = []
 
         # Internal objects
         self.bridge = None
         self.client = None
-        self.sun_tool = None
         self.light_monitor = None
 
         self.logger = logging.getLogger("Monitor")
-
-        self.previous_state = -1000000000
-        self.same_state_count = 0
 
         self.current_color = None
 
@@ -122,15 +116,9 @@ class Monitor(object):
 
         self.current_color = color
 
-    def stop(self, signum, frame):
-        self.logger.info("Stop")
-        self.do_run = False
-
-    def run(self, count=0, delay=5):
+    def run(self):
 
         self.logger.info("Run")
-
-        signal.signal(signal.SIGTERM, self.stop)
 
         # Create a Comwatt client instance
         self.client = comwatt_client.ComwattClient()
@@ -140,94 +128,81 @@ class Monitor(object):
         sites = self.client.get_sites()
         self.site_id = sites[0]['id']
 
-        count = 0
-
         dt_now = datetime.datetime.now(datetime.UTC)
 
         while self.do_run:
 
-            try:
+            data = self.client.get_site_networks_ts_time_ago(
+                self.site_id, aggregation_level="NONE")
 
-                data = self.client.get_site_networks_ts_time_ago(
-                    self.site_id, aggregation_level="NONE")
+            timestamp = data['timestamps'][-1]
+            production = data['productions'][-1]
+            consumption = data['consumptions'][-1]
 
-                timestamp = data['timestamps'][-1]
-                production = data['productions'][-1]
-                consumption = data['consumptions'][-1]
+            if type(production) is str:
+                self.logger.warning("Production: %s" % production)
+                time.sleep(2)
+                continue
 
-                if type(production) is str:
-                    self.logger.warning("Production: %s" % production)
-                    time.sleep(2)
-                    continue
+            if type(consumption) is str:
+                self.logger.warning("Consumption: %s" % consumption)
+                time.sleep(2)
+                continue
 
-                if type(consumption) is str:
-                    self.logger.warning("Consumption: %s" % consumption)
-                    time.sleep(2)
-                    continue
+            delta = production - consumption
 
-                delta = production - consumption
+            if production < self.threshold_sun:
+                # Sun is not sufficient -> Off
+                self.set_color(None)
 
-                if production < self.threshold_sun:
-                    # Sun is not sufficient -> Off
-                    self.set_color(None)
+            else:
 
-                else:
+                color = None
+                i = 0
+                while i < len(self.thresholds):
+                    if delta > self.thresholds[i][0]:
+                        color = self.thresholds[i][1]
+                    else:
+                        break
+                    i += 1
 
-                    color = None
-                    i = 0
-                    while i < len(self.thresholds):
-                        if delta > self.thresholds[i][0]:
-                            color = self.thresholds[i][1]
-                        else:
-                            break
-                        i += 1
+                self.set_color(color)
 
-                    self.set_color(color)
+            dt_ts = datetime.datetime.fromisoformat(timestamp)
 
-                dt_ts = datetime.datetime.fromisoformat(timestamp)
+            dt_next = dt_ts + datetime.timedelta(seconds=122)
 
-                dt_next = dt_ts + datetime.timedelta(seconds=122)
+            if dt_next < dt_now:
+                dt_next = dt_now + datetime.timedelta(seconds=2)
 
-                if dt_next < dt_now:
-                    dt_next = dt_now + datetime.timedelta(seconds=2)
-
-                self.logger.info(
-                    "T=%s P=%6d C=%6d D=%6d N=%s (%s)"
-                    % (
-                        dt_ts.strftime("%H:%M:%S"),
-                        production,
-                        consumption,
-                        delta,
-                        dt_next.strftime("%H:%M:%S"),
-                        color
-                    )
+            self.logger.info(
+                "T=%s P=%6d C=%6d D=%6d N=%s (%s)"
+                % (
+                    dt_ts.strftime("%H:%M:%S"),
+                    production,
+                    consumption,
+                    delta,
+                    dt_next.strftime("%H:%M:%S"),
+                    color
                 )
+            )
 
-                while dt_now < dt_next:
+            while self.do_run and dt_now < dt_next:
 
-                    dt_now = datetime.datetime.now(datetime.UTC)
-                    time.sleep(1)
+                dt_now = datetime.datetime.now(datetime.UTC)
+                time.sleep(1)
 
-            except Exception:
-                traceback.print_exc()
-                self.logger.fatal(traceback.format_exc)
-                self.do_run = False
+    def join(self):
 
-            if args.count:
-
-                count += 1
-
-                if count >= args.count:
-                    break
+        self.logger.info("End")
+        self.do_run = False
+        threading.Thread.join(self)
 
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("config")
-    parser.add_argument("--delay", type=int, default=1)
-    parser.add_argument("--count", type=int, default=0)
-    parser.add_argument("--show-browser", action="store_true")
     parser.add_argument("--log-file")
     parser.add_argument(
         "--log-level",
@@ -261,11 +236,12 @@ if __name__ == "__main__":
     config = json.load(fd)
     fd.close()
 
-    m = Monitor(headless=not args.show_browser)
+    m = Monitor()
     m.load_configuration(config)
     m.initialize()
+    m.start()
     try:
-        m.run(delay=args.delay)
-    except Exception:
-        traceback.print_exc()
-        logging.fatal(traceback.format_exc())
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        m.join()
