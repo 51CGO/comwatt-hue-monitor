@@ -196,6 +196,7 @@ class Monitor(threading.Thread):
 
         self.logger.info("End")
         self.do_run = False
+        self.set_color(None)
         threading.Thread.join(self)
 
 
