@@ -18,77 +18,55 @@ class Monitor(threading.Thread):
 
     def __init__(
             self,
-            comwatt_email=None, comwatt_password=None,
-            hue_bridge=None, hue_key=None, hue_light=None):
+            comwatt_email, comwatt_password,
+            hue_bridge_hostname, hue_key, hue_light_name,
+            threshold_production_min=50):
 
         threading.Thread.__init__(self)
+
+        self.logger = logging.getLogger(self.__class__.__name__)
 
         # Comwatt credentials
         self.comwatt_email = comwatt_email
         self.comwatt_password = comwatt_password
 
         # Philips Hue
-        self.hue_bridge = hue_bridge
+        self.hue_bridge_hostname = hue_bridge_hostname
         self.hue_key = hue_key
-        self.hue_light = hue_light
-
-        # Location
-        self.latitude = 0
-        self.longitude = 0
-
+        self.hue_light_name = hue_light_name
+        
         # Sun threshold
-        self.threshold_sun = -1000000000
+        self.threshold_production_min = threshold_production_min
 
         # Thresolds and colors configuration
         self.thresholds = []
 
         # Internal objects
-        self.bridge = None
-        self.client = None
-        self.light_monitor = None
-
-        self.logger = logging.getLogger("Monitor")
+        self.hue_bridge = None
+        self.hue_client = None
+        self.hue_light = None
+        self.comwatt_client = None
 
         self.current_color = None
-
-    def initialize(self):
-
-        # Initialize bridge connection
-        self.bridge = pythonhuecontrol.v1.bridge.Bridge(
-            self.hue_bridge,
-            "http://" + self.hue_bridge + "/api/" + self.hue_key
-        )
-
-        # Find the specified light
-        for light_id in self.bridge.light_ids:
-            light = self.bridge.light(light_id)
-
-            if light.name == self.hue_light:
-                self.light_monitor = light
-                break
-
-        assert self.light_monitor is not None
 
         # Ready to go !
         self.do_run = True
 
-    def load_configuration(self, config):
+    def initialize_hue_light(self):
 
-        self.comwatt_email = config["comwatt"]["email"]
-        self.comwatt_password = config["comwatt"]["password"]
+        # Initialize bridge connection
+        self.hue_bridge = pythonhuecontrol.v1.bridge.Bridge(
+            self.hue_bridge_hostname,
+            "http://" + self.hue_bridge_hostname + "/api/" + self.hue_key
+        )
 
-        self.hue_bridge = config["hue"]["bridge"]
-        self.hue_key = config["hue"]["key"]
-        self.hue_light = config["hue"]["light"]
+        # Find the specified light
+        for light_id in self.hue_bridge.light_ids:
+            light = self.hue_bridge.light(light_id)
 
-        self.threshold_sun = config["thresholds"]["sun"]["min"]
-
-        list_thresholds = [v for v in config["thresholds"]["delta"]]
-
-        for key in list_thresholds:
-            color = config["thresholds"]["delta"][key]
-
-            self.thresholds.append((int(key), color))
+            if light.name == self.hue_light_name:
+                self.hue_light = light
+                break
 
     def set_color(self, color=None):
 
@@ -100,97 +78,123 @@ class Monitor(threading.Thread):
                 return
 
             self.logger.info("Set color: %s" % color)
-            self.light_monitor.set_hex_color(color)
+            self.hue_light.set_hex_color(color)
 
             # Light is off => switch on
             if not self.current_color:
                 self.logger.info("Switch on")
-                self.light_monitor.switch_on()
+                self.hue_light.switch_on()
 
         # Next state = Light off
         else:
 
             if self.current_color:
                 self.logger.info("Switch off")
-                self.light_monitor.switch_off()
+                self.hue_light.switch_off()
 
         self.current_color = color
 
-    def run(self):
-
-        self.logger.info("Run")
+    def initialize_comwatt_client(self):
 
         # Create a Comwatt client instance
-        self.client = comwatt_client.ComwattClient()
+        self.comwatt_client = comwatt_client.ComwattClient()
 
         # Authenticate the user
-        self.client.authenticate(self.comwatt_email, self.comwatt_password)
-        sites = self.client.get_sites()
+        self.comwatt_client.authenticate(self.comwatt_email, self.comwatt_password)
+        sites = self.comwatt_client.get_sites()
         self.site_id = sites[0]['id']
 
-        dt_now = datetime.datetime.now(datetime.UTC)
+    def retrieve_comwatt_data(self):
+        
+        timestamp = None
+        production = None
+        consumption = None
 
-        while self.do_run:
+        if not self.comwatt_client:
+            self.initialize_comwatt_client()
 
-            data = self.client.get_site_networks_ts_time_ago(
-                self.site_id, aggregation_level="NONE")
+        data = self.comwatt_client.get_site_networks_ts_time_ago(
+            self.site_id, aggregation_level="NONE")
 
-            timestamp = data['timestamps'][-1]
-            production = data['productions'][-1]
-            consumption = data['consumptions'][-1]
+        timestamp = data['timestamps'][-1]
+        production = data['productions'][-1]
+        consumption = data['consumptions'][-1]
 
-            if type(production) is str:
-                self.logger.warning("Production: %s" % production)
-                time.sleep(2)
-                continue
+        return timestamp, production, consumption
 
-            if type(consumption) is str:
-                self.logger.warning("Consumption: %s" % consumption)
-                time.sleep(2)
-                continue
+    def run(self):
 
-            delta = production - consumption
+        try:
+            self.logger.info("Run")
 
-            if production < self.threshold_sun:
-                # Sun is not sufficient -> Off
-                self.set_color(None)
-
-            else:
-
-                color = None
-                i = 0
-                while i < len(self.thresholds):
-                    if delta > self.thresholds[i][0]:
-                        color = self.thresholds[i][1]
-                    else:
-                        break
-                    i += 1
-
-                self.set_color(color)
-
-            dt_ts = datetime.datetime.fromisoformat(timestamp)
-
-            dt_next = dt_ts + datetime.timedelta(seconds=122)
-
-            if dt_next < dt_now:
-                dt_next = dt_now + datetime.timedelta(seconds=2)
-
-            self.logger.info(
-                "T=%s P=%6d C=%6d D=%6d N=%s (%s)"
-                % (
-                    dt_ts.strftime("%H:%M:%S"),
-                    production,
-                    consumption,
-                    delta,
-                    dt_next.strftime("%H:%M:%S"),
-                    color
+            self.initialize_hue_light()
+            if self.hue_light is None:
+                self.logger.critical(
+                    "Unable to find a Hue light named %s" % self.hue_light_name
                 )
-            )
+                return
 
-            while self.do_run and dt_now < dt_next:
+            dt_now = datetime.datetime.now(datetime.UTC)
 
-                dt_now = datetime.datetime.now(datetime.UTC)
-                time.sleep(1)
+            while self.do_run:
+
+                timestamp, production, consumption = self.retrieve_comwatt_data()
+
+                if type(production) is str:
+                    self.logger.warning("Production: %s" % production)
+                    time.sleep(2)
+                    continue
+
+                if type(consumption) is str:
+                    self.logger.warning("Consumption: %s" % consumption)
+                    time.sleep(2)
+                    continue
+
+                delta = production - consumption
+
+                if production < self.threshold_production_min:
+                    # Sun is not sufficient -> Off
+                    self.set_color(None)
+
+                else:
+
+                    color = None
+                    i = 0
+                    while i < len(self.thresholds):
+                        if delta > self.thresholds[i][0]:
+                            color = self.thresholds[i][1]
+                        else:
+                            break
+                        i += 1
+
+                    self.set_color(color)
+
+                dt_ts = datetime.datetime.fromisoformat(timestamp)
+
+                dt_next = dt_ts + datetime.timedelta(seconds=122)
+
+                if dt_next < dt_now:
+                    dt_next = dt_now + datetime.timedelta(seconds=2)
+
+                self.logger.info(
+                    "T=%s P=%6d C=%6d D=%6d N=%s (%s)"
+                    % (
+                        dt_ts.strftime("%H:%M:%S"),
+                        production,
+                        consumption,
+                        delta,
+                        dt_next.strftime("%H:%M:%S"),
+                        color
+                    )
+                )
+
+                while self.do_run and dt_now < dt_next:
+
+                    dt_now = datetime.datetime.now(datetime.UTC)
+                    time.sleep(1)
+
+        except Excpetion:
+            self.logger.critical(traceback.format_exc())
 
     def join(self):
 
@@ -234,12 +238,27 @@ if __name__ == "__main__":
             format="%(asctime)s %(levelname)s %(message)s", level=log_level)
 
     fd = open(args.config)
-    config = json.load(fd)
+    dict_config = json.load(fd)
     fd.close()
 
-    m = Monitor()
-    m.load_configuration(config)
-    m.initialize()
+    config_comwatt_email = dict_config["comwatt"]["email"]
+    config_comwatt_password = dict_config["comwatt"]["password"]
+
+    config_hue_bridge = dict_config["hue"]["bridge"]
+    config_hue_key = dict_config["hue"]["key"]
+    config_hue_light = dict_config["hue"]["light"]
+
+    config_threshold_production_min = dict_config["thresholds"]["sun"]["min"]
+
+    config_list_thresholds = [v for v in dict_config["thresholds"]["delta"]]
+    m = Monitor(
+        config_comwatt_email, config_comwatt_password,
+        config_hue_bridge, config_hue_key, config_hue_light,
+        config_threshold_production_min
+    )
+
+    m.thresholds = config_list_thresholds
+
     m.start()
     try:
         while True:
