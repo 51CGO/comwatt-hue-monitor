@@ -13,6 +13,8 @@ import comwatt_client
 
 import pythonhuecontrol.v1.bridge
 
+RETRY_NUMBER = 10
+
 
 class Monitor(threading.Thread):
 
@@ -34,7 +36,7 @@ class Monitor(threading.Thread):
         self.hue_bridge_hostname = hue_bridge_hostname
         self.hue_key = hue_key
         self.hue_light_name = hue_light_name
-        
+
         # Sun threshold
         self.threshold_production_min = threshold_production_min
 
@@ -51,6 +53,18 @@ class Monitor(threading.Thread):
 
         # Ready to go !
         self.do_run = True
+
+    def wait(self, seconds):
+
+        time_now = time.time()
+        time_end = time_now + seconds
+
+        self.logger.debug("Will wait until %s" % time_end)
+
+        while self.do_run and time_now < time_end:
+            self.logger.debug("Time now : %s" % time_now)
+            time_now = time.time()
+            time.sleep(1)
 
     def initialize_hue_light(self):
 
@@ -100,12 +114,14 @@ class Monitor(threading.Thread):
         self.comwatt_client = comwatt_client.ComwattClient()
 
         # Authenticate the user
-        self.comwatt_client.authenticate(self.comwatt_email, self.comwatt_password)
+        self.comwatt_client.authenticate(
+            self.comwatt_email, self.comwatt_password
+        )
         sites = self.comwatt_client.get_sites()
         self.site_id = sites[0]['id']
 
     def retrieve_comwatt_data(self):
-        
+
         timestamp = None
         production = None
         consumption = None
@@ -113,8 +129,29 @@ class Monitor(threading.Thread):
         if not self.comwatt_client:
             self.initialize_comwatt_client()
 
-        data = self.comwatt_client.get_site_networks_ts_time_ago(
-            self.site_id, aggregation_level="NONE")
+        retry_count = 0
+
+        while self.do_run and retry_count <= RETRY_NUMBER:
+
+            try:
+                data = self.comwatt_client.get_site_networks_ts_time_ago(
+                    self.site_id, aggregation_level="NONE")
+                break
+
+            except Exception:
+
+                if retry_count:
+                    delay = 2**retry_count
+                    self.logger.error(
+                        "Unable to retrieve Comwatt data."
+                        " Will retry in %d seconds" % delay
+                    )
+                    self.wait(delay)
+                else:
+                    self.logger.error(
+                        "Unable to retrieve Comwatt data. Will retry now")
+                retry_count += 1
+                self.initialize_comwatt_client()
 
         timestamp = data['timestamps'][-1]
         production = data['productions'][-1]
@@ -138,7 +175,9 @@ class Monitor(threading.Thread):
 
             while self.do_run:
 
-                timestamp, production, consumption = self.retrieve_comwatt_data()
+                timestamp, production, consumption = (
+                    self.retrieve_comwatt_data()
+                )
 
                 if type(production) is str:
                     self.logger.warning("Production: %s" % production)
@@ -193,7 +232,7 @@ class Monitor(threading.Thread):
                     dt_now = datetime.datetime.now(datetime.UTC)
                     time.sleep(1)
 
-        except Excpetion:
+        except Exception:
             self.logger.critical(traceback.format_exc())
 
     def join(self):
@@ -210,21 +249,10 @@ if __name__ == "__main__":
     parser.add_argument("config")
     parser.add_argument("--log-file")
     parser.add_argument(
-        "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        "--log-level", default="WARN",
+        choices=["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"]
     )
     args = parser.parse_args()
-
-    if not args.log_level or args.log_level == "ERROR":
-        log_level = logging.ERROR
-    if args.log_level == "DEBUG":
-        log_level = logging.DEBUG
-    else:
-        if args.log_level == "INFO":
-            log_level = logging.INFO
-        else:
-            if args.log_level == "WARNING":
-                log_level = logging.WARN
 
     if args.log_file:
         log_handler = logging.handlers.RotatingFileHandler(
@@ -232,10 +260,12 @@ if __name__ == "__main__":
             maxBytes=1024 * 1024, backupCount=5)
         logging.basicConfig(
             format="%(asctime)s %(levelname)s %(message)s",
-            level=log_level, handlers=[log_handler])
+            level=args.log_level, handlers=[log_handler])
     else:
         logging.basicConfig(
-            format="%(asctime)s %(levelname)s %(message)s", level=log_level)
+            format="%(asctime)s %(levelname)s %(message)s",
+            level=args.log_level
+        )
 
     fd = open(args.config)
     dict_config = json.load(fd)
