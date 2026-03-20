@@ -5,13 +5,14 @@ import datetime
 import json
 import logging
 import logging.handlers
+import signal
 import time
 import threading
 import traceback
 
 import comwatt_client
-
 import pythonhuecontrol.v1.bridge
+import sunshine_trigger
 
 RETRY_NUMBER = 10
 
@@ -243,6 +244,30 @@ class Monitor(threading.Thread):
         threading.Thread.join(self)
 
 
+class SunshineThreadManager(sunshine_trigger.SunshineTrigger):
+
+    def __init__(self, latitude, longitude, comwatt_hue_monitor):
+        sunshine_trigger.SunshineTrigger.__init__(self, latitude, longitude)
+        self.comwatt_hue_monitor = comwatt_hue_monitor
+
+    def on_sunrise(self):
+
+        if self.comwatt_hue_monitor.is_alive():
+            self.logger.warning("Monitor is already started")
+        else:
+            self.comwatt_hue_monitor.start()
+
+        sunshine_trigger.SunshineTrigger.on_sunrise()
+
+    def on_sunset(self):
+
+        self.comwatt_hue_monitor.join()
+        sunshine_trigger.SunshineTrigger.on_sunset()
+
+    def join(self):
+        self.comwatt_hue_monitor.join()
+        sunshine_trigger.SunshineTrigger.join(self)
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -281,6 +306,10 @@ if __name__ == "__main__":
     config_threshold_production_min = dict_config["thresholds"]["sun"]["min"]
 
     config_list_thresholds = [v for v in dict_config["thresholds"]["delta"]]
+
+    config_latitude = dict_config["location"]["latitude"]
+    config_longitude = dict_config["location"]["longitude"]
+
     m = Monitor(
         config_comwatt_email, config_comwatt_password,
         config_hue_bridge, config_hue_key, config_hue_light,
@@ -290,8 +319,15 @@ if __name__ == "__main__":
     m.thresholds = config_list_thresholds
 
     m.start()
+
+    s = SunshineThreadManager(config_latitude, config_longitude, m)
+
+    signal.signal(signal.SIGTERM, s.join)
+
+    s.start()
+
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        m.join()
+        s.join()
