@@ -1,9 +1,9 @@
-FROM python:3.11-slim-bookworm
+FROM python:3.13-slim-trixie
 
 RUN python3 -m venv /comwatt_hue_monitor
 
 RUN /comwatt_hue_monitor/bin/python3 -m pip install --upgrade pip
-RUN /comwatt_hue_monitor/bin/python3 -m pip install rgbxy pythonhuecontrol comwatt-client sunshine-trigger
+RUN /comwatt_hue_monitor/bin/python3 -m pip install rgbxy pythonhuecontrol comwatt-client sunshine-trigger>=1.0.5
 
 VOLUME /mnt
 WORKDIR /mnt

@@ -55,6 +55,14 @@ class Monitor(threading.Thread):
         # Ready to go !
         self.do_run = True
 
+    def copy(self):
+
+        monitor_new = Monitor(self.comwatt_email, self.comwatt_password,
+            self.hue_bridge_hostname, self.hue_key, self.hue_light_name,
+            self.threshold_production_min)
+        monitor_new.thresholds = self.thresholds
+        return monitor_new
+
     def wait(self, seconds):
 
         time_now = time.time()
@@ -176,6 +184,8 @@ class Monitor(threading.Thread):
 
             while self.do_run:
 
+                color = None
+
                 timestamp, production, consumption = (
                     self.retrieve_comwatt_data()
                 )
@@ -198,7 +208,6 @@ class Monitor(threading.Thread):
 
                 else:
 
-                    color = None
                     i = 0
                     while i < len(self.thresholds):
                         if delta > self.thresholds[i][0]:
@@ -246,23 +255,30 @@ class Monitor(threading.Thread):
 
 class SunshineThreadManager(sunshine_trigger.SunshineTrigger):
 
-    def __init__(self, latitude, longitude, comwatt_hue_monitor):
-        sunshine_trigger.SunshineTrigger.__init__(self, latitude, longitude)
+    def __init__(self, latitude, longitude, comwatt_hue_monitor, test_duration=0):
+        sunshine_trigger.SunshineTrigger.__init__(self, latitude, longitude, test_duration)
         self.comwatt_hue_monitor = comwatt_hue_monitor
 
+    def run(self):
+        self.comwatt_hue_monitor.start()
+        sunshine_trigger.SunshineTrigger.run(self)
+
     def on_sunrise(self):
+
+        self.logger.info("Sunrise : Starting monitor")
+
 
         if self.comwatt_hue_monitor.is_alive():
             self.logger.warning("Monitor is already started")
         else:
+            self.comwatt_hue_monitor = self.comwatt_hue_monitor.copy()
             self.comwatt_hue_monitor.start()
-
-        sunshine_trigger.SunshineTrigger.on_sunrise()
 
     def on_sunset(self):
 
+        self.logger.info("Sunset : Stoping monitor")
+
         self.comwatt_hue_monitor.join()
-        sunshine_trigger.SunshineTrigger.on_sunset()
 
     def join(self):
         self.comwatt_hue_monitor.join()
@@ -317,8 +333,6 @@ if __name__ == "__main__":
     )
 
     m.thresholds = config_list_thresholds
-
-    m.start()
 
     s = SunshineThreadManager(config_latitude, config_longitude, m)
 
